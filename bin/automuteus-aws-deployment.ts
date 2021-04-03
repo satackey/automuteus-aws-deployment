@@ -4,4 +4,5 @@ import * as cdk from '@aws-cdk/core';
 import { AutomuteusAwsDeploymentStack } from '../lib/automuteus-aws-deployment-stack';
 
 const app = new cdk.App();
-new AutomuteusAwsDeploymentStack(app, 'AutomuteusAwsDeploymentStack');
+const automuteusStack = new AutomuteusAwsDeploymentStack(app, 'AutomuteusAwsDeploymentStack');
+cdk.Tags.of(automuteusStack).add(`Group`, `automuteus-bot-2`)
