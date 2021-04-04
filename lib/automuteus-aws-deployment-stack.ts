@@ -4,28 +4,25 @@ import * as ecs from '@aws-cdk/aws-ecs'
 import * as elastiCache from '@aws-cdk/aws-elasticache'
 import * as elbv2 from '@aws-cdk/aws-elasticloadbalancingv2'
 import * as rds from '@aws-cdk/aws-rds'
-import * as route53 from '@aws-cdk/aws-route53'
-import * as route53targets from '@aws-cdk/aws-route53-targets'
 import * as ssm from '@aws-cdk/aws-ssm'
 
 export class AutomuteusAwsDeploymentStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const vpc = new ec2.Vpc(this, 'automuteus-bot-2-vpc', {
-      
+    const vpc = new ec2.Vpc(this, `vpc`, {
       cidr: `10.0.0.0/16`,
       maxAzs: 2,
       natGateways: 0,
       subnetConfiguration: [
         {
           cidrMask: 24,
-          name: 'public',
+          name: 'apps',
           subnetType: ec2.SubnetType.PUBLIC,
         },
         {
           cidrMask: 24,
-          name: `rds-and-elasticache-cluster-connection`,
+          name: `datastores`,
           subnetType: ec2.SubnetType.ISOLATED,
         }
       ],
@@ -38,60 +35,48 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
       subnetType: ec2.SubnetType.ISOLATED,
     })
 
-    // publicSubnets.subnets.forEach((subnet, i) => {
-    //   const isolatedSubnet = vpc.selectSubnets({
-    //     subnetType: ec2.SubnetType.ISOLATED,
-    //     availabilityZones: [subnet.availabilityZone],
-    //   }).subnets[0]
-
-    //   isolatedSubnet.node.
-      
-    //   new ec2.CfnRoute(this, `automuteus-bot-2-routetable-${i}`, {
-    //     destinationCidrBlock: isolatedSubnet.ipv4CidrBlock,
-    //     routeTableId: isolatedSubnet.routeTable.routeTableId,
-        
-    //   })
-    // })
-
-    const postgresSubnetGroup = new rds.SubnetGroup(this, `automuteus-bot-2-rds-subnet-group`, {
+    const postgresSubnetGroup = new rds.SubnetGroup(this, `rds-subnet-group`, {
       vpc,
       description: `subnetgroup for automuteus-bot-2`,
       subnetGroupName: `automuteus-bot-2-rds-subnet-group`,
       vpcSubnets: isolatedSubnets,
     })
 
-    const appSecurityGroup = new ec2.SecurityGroup(this, `automuteus-bot-2-app-security-group`, {
+    const albSecurityGroup = new ec2.SecurityGroup(this, `alb-security-group`, {
+      vpc,
+      allowAllOutbound: false,
+      securityGroupName: `automuteus-bot-2-alb-security-group`
+    })
+
+    const appSecurityGroup = new ec2.SecurityGroup(this, `app-security-group`, {
       vpc,
       allowAllOutbound: true,
       securityGroupName: `automuteus-bot-2-app-security-group`
     })
 
-    const datastoreSecurityGroup = new ec2.SecurityGroup(this, `automuteus-bot-2-datastore-security-group`, {
+    const datastoreSecurityGroup = new ec2.SecurityGroup(this, `datastore-security-group`, {
       vpc,
       allowAllOutbound: false,
       securityGroupName: `automuteus-bot-2-datastore-security-group`,
     })
 
+    albSecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80))
+    albSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.tcp(5858))
+
+    appSecurityGroup.addIngressRule(albSecurityGroup, ec2.Port.allTraffic())
+
     datastoreSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.tcp(6379))
     datastoreSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.tcp(5432))
-    datastoreSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.allTraffic())
-    datastoreSecurityGroup.addEgressRule(appSecurityGroup, ec2.Port.allTraffic())
-    appSecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(8080))
-    appSecurityGroup.addIngressRule(ec2.Peer.anyIpv6(), ec2.Port.tcp(8080))
-    appSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.tcp(5858))
-    appSecurityGroup.addEgressRule(appSecurityGroup, ec2.Port.allTraffic())
-
-    appSecurityGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.allTraffic())
-    appSecurityGroup.addEgressRule(ec2.Peer.anyIpv6(), ec2.Port.allTraffic())
+    // datastoreSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.allTraffic())
 
     const postgresCredentials = rds.Credentials.fromPassword(`automuteus`, new cdk.SecretValue(`password`))
-    const postgresCluster = new rds.ServerlessCluster(this, `automuteus-bot-2-postgres`, {
+    const postgresCluster = new rds.ServerlessCluster(this, `postgres`, {
       engine: rds.DatabaseClusterEngine.auroraPostgres({
         version: rds.AuroraPostgresEngineVersion.VER_10_14,
       }),
       defaultDatabaseName: `automuteus`,
       credentials: postgresCredentials,
-      backupRetention: cdk.Duration.days(1),
+      backupRetention: cdk.Duration.days(35),
       clusterIdentifier: `automuteus-bot-2-postgres`,
       vpc: vpc,
       deletionProtection: false,
@@ -104,13 +89,13 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
       },
     })
 
-    const elastiCacheSubnetGroup = new elastiCache.CfnSubnetGroup(this, `automuteus-bot-2-elasticache-subnet-group`, {
+    const elastiCacheSubnetGroup = new elastiCache.CfnSubnetGroup(this, `elasticache-subnet-group`, {
       description: `Subnet group for automuteus-bot-2-redis`,
       subnetIds: isolatedSubnets.subnetIds,
       cacheSubnetGroupName: `automuteus-bot-2-elasticache-subnet-group`,
     })
 
-    const redisCluster = new elastiCache.CfnCacheCluster(this, `automuteus-bot-2-redis`, {
+    const redisCluster = new elastiCache.CfnCacheCluster(this, `redis`, {
       clusterName: `automuteus-bot-2-redis`,
       cacheNodeType: `cache.t3.micro`,
       engine: `redis`,
@@ -128,26 +113,8 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
         version: 1,
       }
     )
-    // const postgresUserParameter = ssm.StringParameter.fromStringParameterName(
-    //   this,
-    //   `automuteus-bot-2-ssm-parameter-postgres-user`,
-    //   `/automuteus-bot-1/postgres_user`
-    // )
-    // const postgresPassParameter = ssm.StringParameter.fromStringParameterName(
-    //   this,
-    //   `automuteus-bot-2-ssm-parameter-postgres-pass`,
-    //   `/automuteus-bot-1/postgres_pass`
-    // )
 
-    // const pgsUserParameter = new ssm.StringParameter(this, `automuteus-bot-2-ssm-parameter-postgres-user`, {
-    //   parameterName: `/automuteus-bot-2/postgres_user`,
-    //   stringValue: postgresCluster.
-    //   type: ssm.ParameterType.STRING,
-    // })
-
-    // postgresUserParameter
-
-    const galactusTaskDefinition = new ecs.FargateTaskDefinition(this, `automuteus-bot-2-task-def-galactus`, {
+    const galactusTaskDefinition = new ecs.FargateTaskDefinition(this, `task-def-galactus`, {
       memoryLimitMiB: 512,
       cpu: 256,
     })
@@ -168,11 +135,11 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: `automuteus-bot-2-galactus` })
     })
 
-    const fargateCluster = new ecs.Cluster(this, `automuteus-bot-2-cluster`, {
+    const fargateCluster = new ecs.Cluster(this, `cluster`, {
       vpc,
     })
 
-    const galactusService = new ecs.FargateService(this, `automuteus-bot-2-service-galactus`, {
+    const galactusService = new ecs.FargateService(this, `service-galactus`, {
       cluster: fargateCluster,
       taskDefinition: galactusTaskDefinition,
       desiredCount: 1,
@@ -181,24 +148,15 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
       vpcSubnets: publicSubnets,
     })
 
-    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, `automuteus-bot-2-route53-hosted-zone`, {
-      hostedZoneId: `Z09058521EOP7ZCH1YB1R`,
-      zoneName: `homelab.satackey.com`,
+    const alb = new elbv2.ApplicationLoadBalancer(this, 'automuteus-bot-2-load-balancer', {
+      vpc,
+      vpcSubnets: publicSubnets,
+      internetFacing: true,
+      securityGroup: albSecurityGroup,
     })
-    // new route53.ARecord(this, `automuteus-bot-2-route53-galactus-public-access-record`, {
-    //   target: route53.RecordTarget.fromIpAddresses(galactusService.),
-    //   zone: hostedZone,
-    //   recordName: `galactus.automuteus-bot-2.not.homelab`,
-    // })
-    // new route53.ARecord(this, `automuteus-bot-2-route53-galactus-internal-access-record`, {
-    //   target: route53.RecordTarget.fromIpAddresses(``),
-    //   zone: hostedZone,
-    //   recordName: `galactus.internal.automuteus-bot-2.not.homelab`,
-    // })
 
-
-    const automuteusTaskDefinition = new ecs.FargateTaskDefinition(this, `automuteus-bot-2-task-def-automuteus`, {
-      memoryLimitMiB: 612,
+    const automuteusTaskDefinition = new ecs.FargateTaskDefinition(this, `task-def-automuteus`, {
+      memoryLimitMiB: 512,
       cpu: 256,
     })
     const automuteusTaskDefContainer = automuteusTaskDefinition.addContainer(`automuteus-bot-2-task-def-container-automuteus`, {
@@ -207,8 +165,8 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
         { containerPort: 5000 },
       ],
       environment: {
-        'GALACTUS_ADDR': `http://galactus.internal.automuteus-bot-2.not.homelab.satackey.com:5858`,
-        'HOST': `http://galactus.automuteus-bot-2.not.homelab.satackey.com`,
+        'GALACTUS_ADDR': `http://${alb.loadBalancerDnsName}:5858`,
+        'HOST': `http://${alb.loadBalancerDnsName}`,
         'POSTGRES_ADDR': `${postgresCluster.clusterEndpoint.hostname}:5432`,
         'REDIS_ADDR': `${redisCluster.attrRedisEndpointAddress}:${redisCluster.attrRedisEndpointPort}`,
         'POSTGRES_USER': `automuteus`,
@@ -223,8 +181,7 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: `automuteus-bot-2-automuteus` })
     })
 
-
-    const automuteusService = new ecs.FargateService(this, `automuteus-bot-2-service-automuteus`, {
+    const automuteusService = new ecs.FargateService(this, `service-automuteus`, {
       cluster: fargateCluster,
       taskDefinition: automuteusTaskDefinition,
       desiredCount: 1,
@@ -233,24 +190,9 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
       vpcSubnets: publicSubnets,
     })
 
-    const albSecurityGroup = new ec2.SecurityGroup(this, `automuteus-bot-2-alb-security-group`, {
-      vpc,
-      allowAllOutbound: true,
-      securityGroupName: `automuteus-bot-2-alb-security-group`
-    })
-
-    albSecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80))
-    albSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.tcp(5858))
-    appSecurityGroup.addIngressRule(albSecurityGroup, ec2.Port.allTraffic())
-
-    const alb = new elbv2.ApplicationLoadBalancer(this, 'automuteus-bot-2-load-balancer', {
-      vpc,
-      internetFacing: true,
-      securityGroup: albSecurityGroup,
-    })
     const internalListener = alb.addListener(`automuteus-bot-2-alblistener-private`, {
       port: 5858,
-      open: true,
+      open: false,
       protocol: elbv2.ApplicationProtocol.HTTP,
     })
     internalListener.connections.addSecurityGroup(albSecurityGroup)
@@ -271,16 +213,5 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
         protocol: elbv2.ApplicationProtocol.HTTP,
       }),
     })
-    new route53.ARecord(this, `automuteus-bot-1-public-load-balancer-ingress`, {
-      target: route53.RecordTarget.fromAlias(new route53targets.LoadBalancerTarget(alb)),
-      zone: hostedZone,
-      recordName: `galactus.automuteus-bot-2.not`,
-    })
-    new route53.ARecord(this, `automuteus-bot-1-internal-load-balancer-ingress`, {
-      target: route53.RecordTarget.fromAlias(new route53targets.LoadBalancerTarget(alb)),
-      zone: hostedZone,
-      recordName: `galactus.internal.automuteus-bot-2.not`,
-    })
-
   }
 }
