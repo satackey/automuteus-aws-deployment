@@ -12,6 +12,7 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
 
     const vpc = new ec2.Vpc(this, `vpc`, {
       cidr: `10.0.0.0/16`,
+      
       maxAzs: 2,
       natGateways: 0,
       subnetConfiguration: [
@@ -61,8 +62,9 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
     })
 
     albSecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80))
-    albSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.tcp(5858))
+    albSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.allTraffic())
 
+    albSecurityGroup.addEgressRule(appSecurityGroup, ec2.Port.allTraffic())
     appSecurityGroup.addIngressRule(albSecurityGroup, ec2.Port.allTraffic())
 
     datastoreSecurityGroup.addIngressRule(appSecurityGroup, ec2.Port.tcp(6379))
@@ -89,6 +91,7 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
       },
     })
 
+    return;
     const elastiCacheSubnetGroup = new elastiCache.CfnSubnetGroup(this, `elasticache-subnet-group`, {
       description: `Subnet group for automuteus-bot-2-redis`,
       subnetIds: isolatedSubnets.subnetIds,
@@ -141,6 +144,7 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
 
     const galactusService = new ecs.FargateService(this, `service-galactus`, {
       cluster: fargateCluster,
+      serviceName: `galactus`,
       taskDefinition: galactusTaskDefinition,
       desiredCount: 1,
       assignPublicIp: true,
@@ -150,6 +154,7 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
 
     const alb = new elbv2.ApplicationLoadBalancer(this, 'automuteus-bot-2-load-balancer', {
       vpc,
+      // ipAddressType: elbv2.IpAddressType.DUAL_STACK,
       vpcSubnets: publicSubnets,
       internetFacing: true,
       securityGroup: albSecurityGroup,
@@ -183,6 +188,7 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
 
     const automuteusService = new ecs.FargateService(this, `service-automuteus`, {
       cluster: fargateCluster,
+      serviceName: `automuteus`,
       taskDefinition: automuteusTaskDefinition,
       desiredCount: 1,
       assignPublicIp: true,
@@ -192,10 +198,9 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
 
     const internalListener = alb.addListener(`automuteus-bot-2-alblistener-private`, {
       port: 5858,
-      open: false,
+      open: true,
       protocol: elbv2.ApplicationProtocol.HTTP,
     })
-    internalListener.connections.addSecurityGroup(albSecurityGroup)
     galactusService.registerLoadBalancerTargets({
       containerName: galactusTaskDefContainer.containerName,
       containerPort: 5858,
@@ -204,7 +209,11 @@ export class AutomuteusAwsDeploymentStack extends cdk.Stack {
         protocol: elbv2.ApplicationProtocol.HTTP,
       }),
     })
-    const publicListener = alb.addListener(`automuteus-bot-2-alblistener-public`, { port: 80 })
+    const publicListener = alb.addListener(`automuteus-bot-2-alblistener-public`, {
+      port: 80,
+      open: true,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+    })
     galactusService.registerLoadBalancerTargets({
       containerName: galactusTaskDefContainer.containerName,
       containerPort: 8080,
